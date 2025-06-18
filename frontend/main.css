@@ -1352,3 +1352,72 @@ input {
         padding: 5px 2px;
     }
 }
+
+/* Delegate section styles */
+.delegate-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    width: 100%;
+    max-width: 400px;
+    margin: 0 auto;
+    padding: 20px 0;
+}
+
+.delegate-controls .input-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.delegate-controls select.input {
+    appearance: none;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    background-size: 16px;
+    padding-right: 30px;
+}
+
+.delegate-controls .input:focus {
+    outline: none;
+    border-color: #003734;
+    box-shadow: 0 0 0 2px rgba(0, 55, 52, 0.1);
+}
+
+.delegate-controls .button-container {
+    margin-top: 10px;
+}
+
+/* Update box wrapper for delegate direction */
+.box-wrapper.delegate-direction {
+    justify-content: center;
+}
+
+/* Update bridge buttons container for delegate tab */
+.bridge-buttons-container.delegate-direction {
+    height: auto;
+    min-height: 400px;
+}
+
+/* Responsive styles for delegate section */
+@media (max-width: 768px) {
+    .delegate-controls {
+        padding: 15px 0;
+    }
+    
+    .delegate-controls .input-fields {
+        gap: 10px;
+    }
+}
+
+@media (max-width: 400px) {
+    .delegate-controls {
+        padding: 10px 0;
+    }
+    
+    .delegate-controls select.input {
+        background-size: 14px;
+        padding-right: 25px;
+    }
+}

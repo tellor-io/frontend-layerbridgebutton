@@ -26,6 +26,8 @@ const App = {
   connectedWallet: null,
   keplrAddress: null,
   currentBridgeDirection: 'layer', // 'layer' or 'ethereum'
+  cosmosWallet: null,
+  sequenceCache: null,
 
   _depositLimit: function() {
     return App.depositLimit;
@@ -99,10 +101,10 @@ const App = {
                         if (App.isKeplrConnected) {
                             await App.disconnectKeplr();
                         } else {
-                            await App.connectKeplr();
+                            await App.connectCosmosWallet();
                         }
                     } catch (error) {
-                        console.error('Keplr operation failed:', error);
+                        console.error('Cosmos wallet operation failed:', error);
                         App.handleError(error);
                     }
                 });
@@ -124,9 +126,10 @@ const App = {
   initWeb3: function () {
     return new Promise((resolve, reject) => {
       try {
-        // Check for both MetaMask and Keplr
+        // Check for MetaMask, Keplr, and Leap
         const hasMetaMask = typeof window.ethereum !== 'undefined';
         const hasKeplr = typeof window.keplr !== 'undefined';
+        const hasLeap = typeof window.leap !== 'undefined';
         
         // Handle MetaMask if available
         if (hasMetaMask) {
@@ -165,13 +168,20 @@ const App = {
           if (metamaskButton) metamaskButton.disabled = false;
         }
         
-        // Handle Keplr if available
-        if (hasKeplr) {
-          App.keplrProvider = window.keplr;
-          // Enable Keplr button
+        // Handle Cosmos wallets (Keplr or Leap) if available
+        if (hasKeplr || hasLeap) {
+          if (hasKeplr) {
+            App.keplrProvider = window.keplr;
+          }
+          if (hasLeap) {
+            App.leapProvider = window.leap;
+          }
+          // Enable Cosmos wallet button
           const keplrButton = document.getElementById("keplrButton");
           if (keplrButton) {
             keplrButton.disabled = false;
+            // Update button text to be more generic
+            keplrButton.innerHTML = 'Connect Cosmos Wallet';
           }
         }
         
@@ -318,6 +328,7 @@ const App = {
         // Set Keplr state
         App.keplrAddress = accounts[0].address;
         App.isKeplrConnected = true;
+        App.cosmosWallet = 'keplr';
         
         // Update button text
         const truncatedAddress = `${App.keplrAddress.substring(0, 6)}...${App.keplrAddress.substring(App.keplrAddress.length - 4)}`;
@@ -343,11 +354,244 @@ const App = {
         App.keplrAddress = null;
         App.isKeplrConnected = false;
         App.keplrProvider = null;
+        App.cosmosWallet = null;
         
         console.error("Error connecting Keplr:", error);
         App.handleError(error);
         throw error;
     }
+  },
+
+  connectLeap: async function() {
+    try {
+        if (!window.leap) {
+            throw new Error('Leap not installed');
+        }
+        
+        // First try to disable any existing connection
+        try {
+            if (typeof window.leap.disable === 'function') {
+                await window.leap.disable('layertest-4');
+            }
+        } catch (error) {
+            console.warn('Could not disable existing chain connection:', error);
+        }
+
+        // Suggest the chain to the user
+        await window.leap.experimentalSuggestChain({
+            chainId: "layertest-4",
+            chainName: "Layer",
+            rpc: "https://node-palmito.tellorlayer.com/rpc",
+            rest: "https://node-palmito.tellorlayer.com/rpc",
+            bip44: {
+                coinType: 118
+            },
+            bech32Config: {
+                bech32PrefixAccAddr: "tellor",
+                bech32PrefixAccPub: "tellorpub",
+                bech32PrefixValAddr: "tellorvaloper",
+                bech32PrefixValPub: "tellorvaloperpub",
+                bech32PrefixConsAddr: "tellorvalcons",
+                bech32PrefixConsPub: "tellorvalconspub",
+            },
+            currencies: [
+                {
+                    coinDenom: "TRB",
+                    coinMinimalDenom: "loya",
+                    coinDecimals: 6,
+                },
+            ],
+            feeCurrencies: [
+                {
+                    coinDenom: "TRB",
+                    coinMinimalDenom: "loya",
+                    coinDecimals: 6,
+                    gasPriceStep: {
+                        low: 0.01,
+                        average: 0.025,
+                        high: 0.04,
+                    }
+                },
+            ],
+            stakeCurrency: {
+                coinDenom: "TRB",
+                coinMinimalDenom: "loya",
+                coinDecimals: 6,
+            },
+        });
+
+        // Enable the chain
+        await window.leap.enable('layertest-4');
+        
+        // Get the offline signer
+        const offlineSigner = window.leap.getOfflineSigner('layertest-4');
+        const accounts = await offlineSigner.getAccounts();
+        
+        if (!accounts || accounts.length === 0) {
+            throw new Error('No accounts found in Leap');
+        }
+        
+        // Set Leap state (using same variables as Keplr for compatibility)
+        App.keplrAddress = accounts[0].address;
+        App.isKeplrConnected = true;
+        App.cosmosWallet = 'leap';
+        
+        // Update button text
+        const truncatedAddress = `${App.keplrAddress.substring(0, 6)}...${App.keplrAddress.substring(App.keplrAddress.length - 4)}`;
+        const keplrButton = document.getElementById('keplrButton');
+        if (keplrButton) {
+            keplrButton.innerHTML = `Disconnect Leap <span class="truncated-address">(${truncatedAddress})</span>`;
+        }
+        
+        // Update balance immediately after connection
+        await App.updateKeplrBalance();
+        
+        // Enable withdraw button if in Ethereum section
+        if (App.currentBridgeDirection === 'ethereum') {
+            const withdrawButton = document.getElementById('withdrawButton');
+            if (withdrawButton) {
+                withdrawButton.disabled = false;
+            }
+        }
+        
+        App.setPageParams();
+    } catch (error) {
+        // Clear connection state on error
+        App.keplrAddress = null;
+        App.isKeplrConnected = false;
+        App.keplrProvider = null;
+        App.cosmosWallet = null;
+        
+        console.error("Error connecting Leap:", error);
+        App.handleError(error);
+        throw error;
+    }
+  },
+
+  connectCosmosWallet: async function() {
+    // Check which wallets are available
+    const hasKeplr = typeof window.keplr !== 'undefined';
+    const hasLeap = typeof window.leap !== 'undefined';
+    
+    if (hasLeap && hasKeplr) {
+      // Both wallets available - show selection dialog
+      const walletChoice = await this.showWalletSelectionDialog();
+      if (walletChoice === 'leap') {
+        console.log('User chose Leap wallet, connecting...');
+        return await this.connectLeap();
+      } else if (walletChoice === 'keplr') {
+        console.log('User chose Keplr wallet, connecting...');
+        return await this.connectKeplr();
+      } else {
+        // User cancelled
+        throw new Error('Wallet connection cancelled');
+      }
+    } else if (hasLeap) {
+      console.log('Leap wallet detected, connecting...');
+      return await this.connectLeap();
+    } else if (hasKeplr) {
+      console.log('Keplr wallet detected, connecting...');
+      return await this.connectKeplr();
+    } else {
+      throw new Error('No Cosmos wallet (Keplr or Leap) detected. Please install Keplr or Leap extension.');
+    }
+  },
+
+  showWalletSelectionDialog: function() {
+    return new Promise((resolve) => {
+      // Create modal dialog
+      const modal = document.createElement('div');
+      modal.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 10000;
+      `;
+      
+      const dialog = document.createElement('div');
+      dialog.style.cssText = `
+        background: white;
+        padding: 2rem;
+        border-radius: 12px;
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+        max-width: 400px;
+        width: 90%;
+        text-align: center;
+      `;
+      
+      dialog.innerHTML = `
+        <h3 style="margin: 0 0 1rem 0; color: #333;">Choose Your Wallet</h3>
+        <p style="margin: 0 0 1.5rem 0; color: #666;">Multiple Cosmos wallets detected. Please select one:</p>
+        <div style="display: flex; gap: 1rem; justify-content: center;">
+          <button id="select-leap" style="
+            padding: 0.75rem 1.5rem;
+            border: 2px solid #4CAF50;
+            background: #4CAF50;
+            color: white;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.2s;
+          " onmouseover="this.style.background='#45a049'" onmouseout="this.style.background='#4CAF50'">
+            Leap
+          </button>
+          <button id="select-keplr" style="
+            padding: 0.75rem 1.5rem;
+            border: 2px solid #2196F3;
+            background: #2196F3;
+            color: white;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.2s;
+          " onmouseover="this.style.background='#1976D2'" onmouseout="this.style.background='#2196F3'">
+            Keplr
+          </button>
+        </div>
+        <button id="cancel-wallet" style="
+          margin-top: 1rem;
+          padding: 0.5rem 1rem;
+          border: 1px solid #ccc;
+          background: #f5f5f5;
+          color: #666;
+          border-radius: 6px;
+          cursor: pointer;
+        ">Cancel</button>
+      `;
+      
+      modal.appendChild(dialog);
+      document.body.appendChild(modal);
+      
+      // Add event listeners
+      document.getElementById('select-leap').addEventListener('click', () => {
+        document.body.removeChild(modal);
+        resolve('leap');
+      });
+      
+      document.getElementById('select-keplr').addEventListener('click', () => {
+        document.body.removeChild(modal);
+        resolve('keplr');
+      });
+      
+      document.getElementById('cancel-wallet').addEventListener('click', () => {
+        document.body.removeChild(modal);
+        resolve(null);
+      });
+      
+      // Close on background click
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+          document.body.removeChild(modal);
+          resolve(null);
+        }
+      });
+    });
   },
 
   disconnectMetaMask: async function() {
@@ -403,32 +647,35 @@ const App = {
 
   disconnectKeplr: async function() {
     try {
-        console.log('Disconnecting Keplr...');
+        console.log('Disconnecting Cosmos wallet...');
         if (!App.isKeplrConnected) {
-            console.log('Keplr already disconnected');
+            console.log('Cosmos wallet already disconnected');
             return;
         }
 
-        // Try to disable the chain in Keplr
+        // Try to disable the chain in the appropriate wallet
         try {
-            if (window.keplr && typeof window.keplr.disable === 'function') {
+            if (App.cosmosWallet === 'leap' && window.leap && typeof window.leap.disable === 'function') {
+                await window.leap.disable('layertest-4');
+            } else if (App.cosmosWallet === 'keplr' && window.keplr && typeof window.keplr.disable === 'function') {
                 await window.keplr.disable('layertest-4');
             }
         } catch (error) {
-            console.warn('Could not disable chain in Keplr:', error);
+            console.warn('Could not disable chain in wallet:', error);
             // Continue with disconnection even if disable fails
         }
 
-        // Clear Keplr state
+        // Clear wallet state
         App.keplrAddress = null;
         App.isKeplrConnected = false;
         App.keplrProvider = null;
+        App.cosmosWallet = null;
 
-        // Update Keplr button
+        // Update wallet button
         const keplrButton = document.getElementById('keplrButton');
         if (keplrButton) {
-            keplrButton.innerHTML = 'Connect Keplr';
-            console.log('Updated Keplr button');
+            keplrButton.innerHTML = 'Connect Cosmos Wallet';
+            console.log('Updated Cosmos wallet button');
         }
 
         // Update balances
@@ -443,14 +690,14 @@ const App = {
             withdrawButton.disabled = true;
         }
 
-        // Update withdrawal history to reflect Keplr disconnection
+        // Update withdrawal history to reflect wallet disconnection
         await this.updateWithdrawalHistory();
 
         // Update page parameters
         App.setPageParams();
-        console.log('Keplr disconnected successfully');
+        console.log('Cosmos wallet disconnected successfully');
     } catch (error) {
-        console.error('Error disconnecting Keplr:', error);
+        console.error('Error disconnecting Cosmos wallet:', error);
         App.handleError(error);
     }
   },
@@ -833,12 +1080,12 @@ const App = {
     popup.style.border = '3px solid black';
     popup.style.fontFamily = "'PPNeueMontreal-Book', Arial, sans-serif";
     popup.style.fontSize = "15px";
-    popup.style.width = '250px'; // Set a fixed width
+    popup.style.width = '300px'; // Increased width to accommodate links
     popup.style.textAlign = 'center'; // Center the text
+    popup.style.lineHeight = '1.4'; // Add line height for better readability
   
-    const messageSpan = document.createElement('span');
-    messageSpan.textContent = message;
-    popup.appendChild(messageSpan);
+    // Use innerHTML to allow for links and HTML content
+    popup.innerHTML = message;
   
     document.body.appendChild(popup);
   
@@ -1021,7 +1268,8 @@ const App = {
     // Add event listener for bridge direction changes
     const bridgeToLayerBtn = document.getElementById('bridgeToLayerBtn');
     const bridgeToEthBtn = document.getElementById('bridgeToEthBtn');
-    if (bridgeToLayerBtn && bridgeToEthBtn) {
+    const delegateBtn = document.getElementById('delegateBtn');
+    if (bridgeToLayerBtn && bridgeToEthBtn && delegateBtn) {
         const handleDirectionChange = () => {
             // Hide tooltip when switching directions
             tooltip.style.display = 'none';
@@ -1033,6 +1281,7 @@ const App = {
         };
         bridgeToLayerBtn.addEventListener('click', handleDirectionChange);
         bridgeToEthBtn.addEventListener('click', handleDirectionChange);
+        delegateBtn.addEventListener('click', handleDirectionChange);
     }
   },
 
@@ -1165,6 +1414,39 @@ const App = {
         // Get offline signer from Keplr
         const offlineSigner = window.keplr.getOfflineSigner('layertest-4');
 
+        // Initialize sequence cache if not exists
+        if (!App.sequenceCache) {
+            App.sequenceCache = new Map();
+        }
+
+        // Get and manage sequence number
+        const getAndIncrementSequence = async (address) => {
+            const now = Date.now();
+            const cached = App.sequenceCache.get(address);
+            
+            // If we have a recent cache (within 5 seconds), use it and increment
+            if (cached && (now - cached.lastUpdated) < 5000) {
+                const currentSequence = cached.sequence;
+                cached.sequence = (parseInt(currentSequence) + 1).toString();
+                cached.lastUpdated = now;
+                return currentSequence;
+            }
+            
+            // Otherwise, fetch fresh from chain
+            const accountUrl = `https://node-palmito.tellorlayer.com/cosmos/auth/v1beta1/accounts/${address}`;
+            const accountResponse = await fetch(accountUrl);
+            const accountData = await accountResponse.json();
+            const sequence = accountData.account?.sequence || "0";
+            
+            // Cache the next sequence
+            App.sequenceCache.set(address, {
+                sequence: (parseInt(sequence) + 1).toString(),
+                lastUpdated: now
+            });
+            
+            return sequence;
+        };
+
         // Get account info first - use keplrAddress instead of account
         const accountUrl = `https://node-palmito.tellorlayer.com/cosmos/auth/v1beta1/accounts/${App.keplrAddress}`;
         const accountResponse = await fetch(accountUrl);
@@ -1172,7 +1454,7 @@ const App = {
         
         const accountInfo = {
             account_number: accountData.account?.account_number || "0",
-            sequence: accountData.account?.sequence || "0"
+            sequence: await getAndIncrementSequence(App.keplrAddress)
         };
 
         // Create the message data for signing - use keplrAddress as creator
@@ -1334,6 +1616,13 @@ const App = {
         console.log('Transaction result:', result);
 
         if (result.tx_response?.code !== 0) {
+            // Check if it's a sequence mismatch error
+            if (result.tx_response?.raw_log && result.tx_response.raw_log.includes('sequence')) {
+                console.log('Sequence mismatch detected, clearing cache and retrying...');
+                // Clear sequence cache to force fresh fetch
+                App.sequenceCache.delete(App.keplrAddress);
+                throw new Error('Sequence mismatch - please try again');
+            }
             throw new Error(result.tx_response?.raw_log || 'Transaction failed');
         }
 
@@ -1352,6 +1641,13 @@ const App = {
                 const txResponse = statusData.tx_response;
                 if (txResponse.height !== "0") {
                     if (txResponse.code === 0) {
+                        // Update sequence after successful transaction
+                        const now = Date.now();
+                        App.sequenceCache.set(App.keplrAddress, {
+                            sequence: (parseInt(accountInfo.sequence) + 1).toString(),
+                            lastUpdated: now
+                        });
+                        
                         App.hidePendingPopup();
                         App.showSuccessPopup("Withdrawal successful! You will need to wait 12 hours before you can claim your tokens on Ethereum.");
                         await App.updateKeplrBalance();
@@ -1869,7 +2165,13 @@ const App = {
         App.hidePendingPopup();
         
         if (result && result.code === 0) {
-            App.showSuccessPopup("Attestation requested successfully!");
+            // Create success message with transaction hash link
+            let successMessage = "Attestation requested successfully!";
+            if (result.txhash) {
+                const explorerUrl = `https://explorer.tellor.io/txs/${result.txhash}`;
+                successMessage += `<br><br><a href="${explorerUrl}" target="_blank" style="color: #083b44; text-decoration: underline;">View on Tellor Explorer</a>`;
+            }
+            App.showSuccessPopup(successMessage);
             // Enable the claim button and remove the waiting class
             if (claimButton) {
                 claimButton.disabled = false;
@@ -2384,11 +2686,13 @@ const App = {
   initBridgeDirectionUI: function() {
     const bridgeToLayerBtn = document.getElementById('bridgeToLayerBtn');
     const bridgeToEthBtn = document.getElementById('bridgeToEthBtn');
+    const delegateBtn = document.getElementById('delegateBtn');
     const bridgeToLayerSection = document.getElementById('bridgeToLayerSection');
     const bridgeToEthSection = document.getElementById('bridgeToEthSection');
+    const delegateSection = document.getElementById('delegateSection');
     const transactionsContainer = document.getElementById('bridgeTransactionsContainer');
 
-    if (!bridgeToLayerBtn || !bridgeToEthBtn || !bridgeToLayerSection || !bridgeToEthSection) {
+    if (!bridgeToLayerBtn || !bridgeToEthBtn || !delegateBtn || !bridgeToLayerSection || !bridgeToEthSection || !delegateSection) {
         console.error('Bridge direction UI elements not found');
         return;
     }
@@ -2398,6 +2702,7 @@ const App = {
     bridgeToLayerBtn.classList.add('active');
     bridgeToLayerSection.classList.add('active');
     bridgeToEthSection.classList.remove('active');
+    delegateSection.classList.remove('active');
 
     // Initially hide transactions container
     if (transactionsContainer) {
@@ -2416,22 +2721,30 @@ const App = {
             this.switchBridgeDirection('ethereum');
         }
     });
+
+    delegateBtn.addEventListener('click', () => {
+        if (this.currentBridgeDirection !== 'delegate') {
+            this.switchBridgeDirection('delegate');
+        }
+    });
   },
 
   switchBridgeDirection: function(direction) {
-    if (direction !== 'layer' && direction !== 'ethereum') {
+    if (direction !== 'layer' && direction !== 'ethereum' && direction !== 'delegate') {
         console.error('Invalid bridge direction:', direction);
         return;
     }
 
     const bridgeToLayerBtn = document.getElementById('bridgeToLayerBtn');
     const bridgeToEthBtn = document.getElementById('bridgeToEthBtn');
+    const delegateBtn = document.getElementById('delegateBtn');
     const bridgeToLayerSection = document.getElementById('bridgeToLayerSection');
     const bridgeToEthSection = document.getElementById('bridgeToEthSection');
+    const delegateSection = document.getElementById('delegateSection');
     const transactionsContainer = document.getElementById('bridgeTransactionsContainer');
     const boxWrapper = document.querySelector('.box-wrapper');
 
-    if (!bridgeToLayerBtn || !bridgeToEthBtn || !bridgeToLayerSection || !bridgeToEthSection) {
+    if (!bridgeToLayerBtn || !bridgeToEthBtn || !delegateBtn || !bridgeToLayerSection || !bridgeToEthSection || !delegateSection) {
         console.error('Bridge direction UI elements not found');
         return;
     }
@@ -2439,16 +2752,20 @@ const App = {
     // Update active states
     bridgeToLayerBtn.classList.toggle('active', direction === 'layer');
     bridgeToEthBtn.classList.toggle('active', direction === 'ethereum');
+    delegateBtn.classList.toggle('active', direction === 'delegate');
     bridgeToLayerSection.classList.toggle('active', direction === 'layer');
     bridgeToEthSection.classList.toggle('active', direction === 'ethereum');
+    delegateSection.classList.toggle('active', direction === 'delegate');
     
     // Update box wrapper classes for animation
     if (boxWrapper) {
-        boxWrapper.classList.remove('layer-direction', 'ethereum-direction');
-        boxWrapper.classList.add(direction === 'layer' ? 'layer-direction' : 'ethereum-direction');
+        boxWrapper.classList.remove('layer-direction', 'ethereum-direction', 'delegate-direction');
+        boxWrapper.classList.add(direction === 'layer' ? 'layer-direction' : 
+                               direction === 'ethereum' ? 'ethereum-direction' : 
+                               'delegate-direction');
     }
     
-    // Show/hide transactions container based on direction only
+    // Show/hide transactions container based on direction
     if (transactionsContainer) {
         transactionsContainer.classList.toggle('active', direction === 'ethereum');
     }
@@ -2470,7 +2787,7 @@ const App = {
             if (approveButton) approveButton.disabled = false;
             if (depositButton) depositButton.disabled = false;
         }
-    } else {
+    } else if (this.currentBridgeDirection === 'ethereum') {
         // Update Ethereum section UI
         const withdrawButton = document.getElementById('withdrawButton');
         
@@ -2478,6 +2795,7 @@ const App = {
             if (withdrawButton) withdrawButton.disabled = false;
         }
     }
+    // Note: Delegate section UI is handled by DelegateApp
 
     // Only show transactions table in ethereum direction
     const transactionsContainer = document.getElementById('bridgeTransactionsContainer');
@@ -2558,4 +2876,44 @@ function validateChainId(chainId) {
         throw new Error(`Please connect to Sepolia (chain ID: 11155111). Mainnet support coming soon.`);
     }
     return true;
+}
+
+// Add this function to suggest the chain to Keplr
+async function suggestLayerTestnetToKeplr() {
+  if (!window.keplr) {
+    console.warn('Keplr not available');
+    return;
+  }
+  try {
+    await window.keplr.experimentalSuggestChain({
+      chainId: "layertest-4",
+      chainName: "Layer Testnet",
+      rpc: "https://node-palmito.tellorlayer.com",
+      rest: "https://node-palmito.tellorlayer.com",
+      bip44: { coinType: 118 },
+      bech32Config: {
+        bech32PrefixAccAddr: "tellor",
+        bech32PrefixAccPub: "tellorpub",
+        bech32PrefixValAddr: "tellorvaloper",
+        bech32PrefixValPub: "tellorvaloperpub",
+        bech32PrefixConsAddr: "tellorvalcons",
+        bech32PrefixConsPub: "tellorvalconspub"
+      },
+      currencies: [{ coinDenom: "LOYA", coinMinimalDenom: "loya", coinDecimals: 6 }],
+      feeCurrencies: [{ coinDenom: "LOYA", coinMinimalDenom: "loya", coinDecimals: 6 }],
+      stakeCurrency: { coinDenom: "LOYA", coinMinimalDenom: "loya", coinDecimals: 6 },
+      coinType: 118,
+      features: ["stargate", "ibc-transfer"]
+    });
+    console.log('Successfully suggested Layer Testnet to Keplr');
+  } catch (err) {
+    console.error('Failed to suggest chain to Keplr:', err);
+  }
+}
+
+// Call this on app init if Keplr is available
+if (window.keplr) {
+  suggestLayerTestnetToKeplr();
+} else {
+  window.addEventListener('keplr_keystorechange', suggestLayerTestnetToKeplr);
 }

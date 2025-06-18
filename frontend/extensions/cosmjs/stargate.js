@@ -1,4 +1,5 @@
 // @cosmjs/stargate v0.28.11
+
 (function(global, factory) {
     typeof exports === 'object' && typeof module !== 'undefined' ? factory(exports) :
     typeof define === 'function' && define.amd ? define(['exports'], factory) :
@@ -38,6 +39,16 @@
             decode: (binary) => {
                 return window.layerProto.bridge.MsgRequestAttestations.decode(binary);
             }
+        }],
+        ["/cosmos.staking.v1beta1.MsgDelegate", {
+            encode: (message) => {
+                // Use the auto-generated encoder from staking_proto.js
+                // staking_proto.js attaches to window.cosmos.staking.v1beta1.MsgDelegate
+                return window.cosmos.staking.v1beta1.MsgDelegate.encode(message).finish();
+            },
+            decode: (binary) => {
+                return window.cosmos.staking.v1beta1.MsgDelegate.decode(binary);
+            }
         }]
     ];
 
@@ -48,6 +59,8 @@
             this.rpcUrl = (rpcUrl || "https://node-palmito.tellorlayer.com").replace(/\/+$/, '').replace(/\/rpc$/, '');
             this.signer = signer;
             this.registry = new Map(customTypes);
+            // Add sequence management
+            this.sequenceCache = new Map(); // address -> { sequence, lastUpdated }
         }
 
         static async connectWithSigner(rpcUrl, signer) {
@@ -156,78 +169,376 @@
 
         async signAndBroadcast(signerAddress, messages, fee, memo = "") {
             try {
-                // Get account info
+                // Get sequence with proper management
+                const sequence = await this.getAndIncrementSequence(signerAddress);
                 const accountInfo = await this.getAccount(signerAddress);
+                console.log('Signing with account info:', { ...accountInfo, sequence });
+                
+                // Debug: Log sequence details
+                console.log('Sequence details:', {
+                    originalSequence: accountInfo.sequence,
+                    usedSequence: sequence,
+                    sequenceType: typeof sequence,
+                    sequenceParsed: parseInt(sequence),
+                    successfulTransactionSequence: '998',
+                    sequenceDifference: parseInt(sequence) - 998,
+                    accountAddress: signerAddress,
+                    successfulAccountAddress: 'tellor1alcefjzkk37qmfrnel8q4eruyll0pc8arxhxxw',
+                    sameAccount: signerAddress === 'tellor1alcefjzkk37qmfrnel8q4eruyll0pc8arxhxxw'
+                });
 
                 if (!accountInfo) {
                     throw new Error('Account not found');
                 }
 
+                // Check if this is a staking message (use signDirect)
+                if (messages.length === 1 && messages[0].typeUrl === "/cosmos.staking.v1beta1.MsgDelegate") {
+                    try {
+                        // --- signDirect logic ---
+                        // Prepare proto-encoded message
+                        const encoder = this.registry.get(messages[0].typeUrl);
+                        if (!encoder) {
+                            throw new Error(`No encoder found for message type: ${messages[0].typeUrl}`);
+                        }
+                        const msgValue = encoder.encode(messages[0].value);
+                        
+                        // Debug: Log message encoding
+                        console.log('Message encoding details:', {
+                            originalMessage: messages[0].value,
+                            encodedLength: msgValue.length,
+                            encodedHex: Array.from(msgValue).map(b => b.toString(16).padStart(2, '0')).join(''),
+                            successfulMessageHex: '0a2d74656c6c6f7231616c6365666a7a6b6b3337716d66726e656c387134657275796c6c3070633861727868787877123474656c6c6f7276616c6f70657231616c6365666a7a6b6b3337716d66726e656c387134657275796c6c3070633861727868666d356c371a0e0a046c6f7961120131'
+                        });
+
+                        // Protobuf types
+                        const root = new protobuf.Root();
+                        const Coin = new protobuf.Type("Coin")
+                            .add(new protobuf.Field("denom", 1, "string"))
+                            .add(new protobuf.Field("amount", 2, "string"));
+                        const Any = new protobuf.Type("Any")
+                            .add(new protobuf.Field("typeUrl", 1, "string"))
+                            .add(new protobuf.Field("value", 2, "bytes"));
+                        const TxBody = new protobuf.Type("TxBody")
+                            .add(new protobuf.Field("messages", 1, "Any", "repeated"))
+                            .add(new protobuf.Field("memo", 2, "string"))
+                            .add(new protobuf.Field("timeout_height", 3, "uint64"));
+                        const PubKey = new protobuf.Type("PubKey")
+                            .add(new protobuf.Field("key", 1, "bytes"));
+                        
+                        // Define SignMode enum correctly
+                        const SignMode = new protobuf.Enum("SignMode")
+                            .add("SIGN_MODE_UNSPECIFIED", 0)
+                            .add("SIGN_MODE_DIRECT", 1)
+                            .add("SIGN_MODE_TEXTUAL", 2)
+                            .add("SIGN_MODE_LEGACY_AMINO_JSON", 127);
+                        
+                        const Single = new protobuf.Type("Single")
+                            .add(new protobuf.Field("mode", 1, "SignMode"));
+                        const ModeInfo = new protobuf.Type("ModeInfo")
+                            .add(new protobuf.Field("single", 1, "Single"));
+                        const SignerInfo = new protobuf.Type("SignerInfo")
+                            .add(new protobuf.Field("public_key", 1, "Any"))
+                            .add(new protobuf.Field("mode_info", 2, "ModeInfo"))
+                            .add(new protobuf.Field("sequence", 3, "uint64"));
+                        const Fee = new protobuf.Type("Fee")
+                            .add(new protobuf.Field("amount", 1, "Coin", "repeated"))
+                            .add(new protobuf.Field("gas_limit", 2, "uint64"));
+                        const AuthInfo = new protobuf.Type("AuthInfo")
+                            .add(new protobuf.Field("signer_infos", 1, "SignerInfo", "repeated"))
+                            .add(new protobuf.Field("fee", 2, "Fee"));
+                        const Tx = new protobuf.Type("Tx")
+                            .add(new protobuf.Field("body", 1, "TxBody"))
+                            .add(new protobuf.Field("auth_info", 2, "AuthInfo"))
+                            .add(new protobuf.Field("signatures", 3, "bytes", "repeated"));
+                        
+                        // Add all types to root
+                        root.add(Coin);
+                        root.add(Any);
+                        root.add(TxBody);
+                        root.add(PubKey);
+                        root.add(SignMode);
+                        root.add(Single);
+                        root.add(ModeInfo);
+                        root.add(SignerInfo);
+                        root.add(Fee);
+                        root.add(AuthInfo);
+                        root.add(Tx);
+
+                        // Build TxBody
+                        const txBody = {
+                            messages: [{
+                                typeUrl: "/cosmos.staking.v1beta1.MsgDelegate",
+                                value: msgValue
+                            }],
+                            memo: memo || "",
+                            timeout_height: 0
+                        };
+                        const TxBodyType = root.lookupType("TxBody");
+                        const bodyBytes = TxBodyType.encode(txBody).finish();
+                        
+                        // Debug: Compare message structure
+                        console.log('Message comparison:', {
+                            ourMessage: {
+                                typeUrl: "/cosmos.staking.v1beta1.MsgDelegate",
+                                value: messages[0].value
+                            },
+                            successfulMessage: {
+                                typeUrl: "/cosmos.staking.v1beta1.MsgDelegate",
+                                value: {
+                                    delegatorAddress: "tellor1alcefjzkk37qmfrnel8q4eruyll0pc8arxhxxw",
+                                    validatorAddress: "tellorvaloper1alcefjzkk37qmfrnel8q4eruyll0pc8akfm5l7",
+                                    amount: { denom: "loya", amount: "1" }
+                                }
+                            },
+                            bodyBytesLength: bodyBytes.length
+                        });
+
+                        // Build AuthInfo
+                        // Use the signer that was passed to the client constructor
+                        const accounts = await this.signer.getAccounts();
+                        const account = accounts.find(acc => acc.address === signerAddress);
+                        if (!account) throw new Error('Account not found in signer');
+                        
+                        // Use the public key from the wallet signer instead of fetching from chain
+                        let pubKeyBytes = account.pubkey;
+                        
+                        // Debug: Log the public key being used
+                        console.log('Wallet public key (Uint8Array):', Array.from(pubKeyBytes));
+                        console.log('Wallet public key (base64):', btoa(String.fromCharCode.apply(null, pubKeyBytes)));
+                        
+                        // Debug: Compare with successful transaction public key
+                        const successfulPubKey = 'A8ewUdR2YoNh4vwa6hEB201r+KEXUzahx4iCDlnxzau0';
+                        console.log('Successful transaction public key:', successfulPubKey);
+                        console.log('Public key match:', btoa(String.fromCharCode.apply(null, pubKeyBytes)) === successfulPubKey);
+                        
+                        // Try to fetch on-chain public key as fallback
+                        try {
+                            const accountResp = await fetch(`${this.rpcUrl}/cosmos/auth/v1beta1/accounts/${signerAddress}`);
+                            const accountJson = await accountResp.json();
+                            const onChainPubKeyBase64 = accountJson.account?.pub_key?.key;
+                            
+                            if (onChainPubKeyBase64) {
+                                const onChainPubKeyBytes = Uint8Array.from(atob(onChainPubKeyBase64), c => c.charCodeAt(0));
+                                console.log('On-chain public key (base64):', onChainPubKeyBase64);
+                                console.log('On-chain vs wallet public key match:', onChainPubKeyBase64 === btoa(String.fromCharCode.apply(null, pubKeyBytes)));
+                                
+                                // Use on-chain public key if it's different from wallet
+                                if (onChainPubKeyBase64 !== btoa(String.fromCharCode.apply(null, pubKeyBytes))) {
+                                    console.log('Using on-chain public key instead of wallet public key');
+                                    pubKeyBytes = onChainPubKeyBytes;
+                                }
+                            }
+                        } catch (error) {
+                            console.warn('Could not fetch on-chain public key:', error);
+                        }
+                        
+                        const PubKeyType = root.lookupType("PubKey");
+                        const encodedPubKey = PubKeyType.encode({ key: pubKeyBytes }).finish();
+                        const pubKeyAny = {
+                            typeUrl: "/cosmos.crypto.secp256k1.PubKey",
+                            value: encodedPubKey
+                        };
+                        
+                        // Debug: Log the public key Any structure
+                        console.log('Public key Any structure:', {
+                            typeUrl: pubKeyAny.typeUrl,
+                            valueLength: pubKeyAny.value.length,
+                            valueHex: Array.from(pubKeyAny.value).map(b => b.toString(16).padStart(2, '0')).join('')
+                        });
+                        
+                        const AuthInfoType = root.lookupType("AuthInfo");
+                        const authInfo = {
+                            signer_infos: [{
+                                public_key: pubKeyAny,
+                                mode_info: { single: { mode: 1 } }, // SIGN_MODE_DIRECT
+                                sequence: parseInt(sequence)
+                            }],
+                            fee: {
+                                amount: fee.amount,
+                                gas_limit: parseInt(fee.gas)
+                            }
+                        };
+                        const authInfoBytes = AuthInfoType.encode(authInfo).finish();
+                        
+                        // Debug: Log authInfo details
+                        console.log('AuthInfo details:', {
+                            signer_infos: authInfo.signer_infos,
+                            fee: authInfo.fee,
+                            authInfoBytesLength: authInfoBytes.length,
+                            authInfoBytesHex: Array.from(authInfoBytes).map(b => b.toString(16).padStart(2, '0')).join('')
+                        });
+                        
+                        // Debug: Compare with successful transaction fee
+                        console.log('Fee comparison:', {
+                            ourFee: authInfo.fee,
+                            successfulFee: { amount: [{ denom: "loya", amount: "500" }], gas_limit: 200000 },
+                            feeMatch: JSON.stringify(authInfo.fee) === JSON.stringify({ amount: [{ denom: "loya", amount: "500" }], gas_limit: 200000 })
+                        });
+
+                        // Debug: Compare protobuf field definitions
+                        console.log('Protobuf field definitions:', {
+                            feeFields: Fee.fieldsArray.map(f => ({ name: f.name, id: f.id, type: f.type })),
+                            signerInfoFields: SignerInfo.fieldsArray.map(f => ({ name: f.name, id: f.id, type: f.type })),
+                            authInfoFields: AuthInfo.fieldsArray.map(f => ({ name: f.name, id: f.id, type: f.type }))
+                        });
+
+                        // Create SignDoc
+                        const signDoc = {
+                            bodyBytes: bodyBytes,
+                            authInfoBytes: authInfoBytes,
+                            chainId: 'layertest-4',
+                            accountNumber: parseInt(accountInfo.account_number)
+                        };
+
+                        console.log('SignDoc for signDirect:', {
+                            bodyBytes: Array.from(bodyBytes).map(b => b.toString(16).padStart(2, '0')).join(''),
+                            authInfoBytes: Array.from(authInfoBytes).map(b => b.toString(16).padStart(2, '0')).join(''),
+                            chainId: signDoc.chainId,
+                            accountNumber: signDoc.accountNumber
+                        });
+                        
+                        // Debug: Log signDoc structure
+                        console.log('SignDoc structure:', {
+                            bodyBytesLength: bodyBytes.length,
+                            authInfoBytesLength: authInfoBytes.length,
+                            chainId: signDoc.chainId,
+                            accountNumber: signDoc.accountNumber,
+                            bodyBytesHex: Array.from(bodyBytes).map(b => b.toString(16).padStart(2, '0')).join(''),
+                            authInfoBytesHex: Array.from(authInfoBytes).map(b => b.toString(16).padStart(2, '0')).join('')
+                        });
+
+                        // signDirect
+                        const signResult = await this.signer.signDirect(signerAddress, signDoc);
+                        this.signature = signResult.signature.signature;
+                        this.publicKey = pubKeyBytes;
+
+                        // Debug: Log signature details
+                        console.log('SignDirect result:', {
+                            signature: this.signature,
+                            signatureLength: this.signature.length,
+                            publicKey: Array.from(pubKeyBytes),
+                            signDoc: signDoc
+                        });
+                        
+                        // Debug: Compare signature with successful transaction
+                        const successfulSignature = 'KtA40ddSDGww2p50Y3CQI5FrlgUhAbZ/ncxcc4PzfNZx7s6vEfMcazeS44bq5RDu/U2t6qGS2eENJOYCuxWCIA==';
+                        console.log('Signature comparison:', {
+                            ourSignature: this.signature,
+                            successfulSignature: successfulSignature,
+                            signatureMatch: this.signature === successfulSignature,
+                            ourSignatureLength: this.signature.length,
+                            successfulSignatureLength: successfulSignature.length
+                        });
+
+                        // Build Tx
+                        const TxType = root.lookupType("Tx");
+                        
+                        // Convert base64 signature to Uint8Array properly
+                        const signatureBytes = Uint8Array.from(atob(this.signature), c => c.charCodeAt(0));
+                        
+                        const tx = {
+                            body: txBody,
+                            auth_info: authInfo,
+                            signatures: [signatureBytes]
+                        };
+                        
+                        // Debug: Log final transaction
+                        console.log('Final transaction:', {
+                            body: tx.body,
+                            auth_info: tx.auth_info,
+                            signatures: Array.from(tx.signatures[0])
+                        });
+                        
+                        // Create and encode the final transaction
+                        const txObj = TxType.create(tx);
+                        
+                        // Debug: Validate protobuf encoding
+                        const validationError = TxType.verify(txObj);
+                        if (validationError) {
+                            console.error('Protobuf validation error:', validationError);
+                            throw new Error(`Protobuf validation failed: ${validationError}`);
+                        }
+                        
+                        const encodedTx = TxType.encode(txObj).finish();
+                        const base64Tx = btoa(String.fromCharCode.apply(null, encodedTx));
+                        
+                        console.log('Encoded transaction (base64):', base64Tx);
+                        console.log('Encoded transaction length:', encodedTx.length);
+
+                        // Broadcast
+                        const response = await fetch(`${this.rpcUrl}/cosmos/tx/v1beta1/txs`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ tx_bytes: base64Tx, mode: "BROADCAST_MODE_SYNC" })
+                        });
+                        const result = await response.json();
+                        if (result.tx_response?.code !== 0) {
+                            console.error('Transaction error details:', {
+                                code: result.tx_response?.code,
+                                message: result.tx_response?.raw_log,
+                                txHash: result.tx_response?.txhash,
+                                height: result.tx_response?.height
+                            });
+                            throw new Error(result.tx_response?.raw_log || 'Transaction failed');
+                        }
+                        
+                        // Update sequence after successful transaction
+                        this.updateSequenceAfterSuccess(signerAddress, sequence);
+                        return result.tx_response;
+                    } catch (signDirectError) {
+                        console.warn('SignDirect failed, falling back to signAmino:', signDirectError);
+                        // Fall back to signAmino for staking messages
+                        console.log('Falling back to signAmino for staking message...');
+                    }
+                }
+
+                // --- Default: signAmino for all other messages ---
                 // Create the transaction to sign
                 const txToSign = {
                     chain_id: 'layertest-4',
                     account_number: accountInfo.account_number,
-                    sequence: accountInfo.sequence,
+                    sequence: sequence,
                     fee: {
                         amount: fee.amount,
                         gas: fee.gas
                     },
-                    msgs: messages.map(msg => {
-                        // Only modify recipient for withdrawal messages
-                        if (msg.typeUrl === '/layer.bridge.MsgWithdrawTokens' && msg.value.recipient) {
-                            return {
-                                type: msg.typeUrl,
-                                value: {
-                                    ...msg.value,
-                                    recipient: msg.value.recipient.toLowerCase().replace('0x', '')
-                                }
-                            };
-                        }
-                        // For attestation requests, just pass through the message as is
-                        return {
+                    msgs: messages.map(msg => ({
                             type: msg.typeUrl,
                             value: msg.value
-                        };
-                    }),
+                    })),
                     memo: memo
                 };
 
+                console.log('Transaction to sign:', txToSign);
+
                 // Sign the transaction
                 const signResult = await this.signer.signAmino(signerAddress, txToSign);
+                console.log('Sign result:', signResult);
 
                 // Store the signature and public key for broadcasting
                 this.signature = signResult.signature.signature;
                 this.publicKey = signResult.signature.pub_key.value;
-                this.sequence = accountInfo.sequence;
 
-                // Create a fresh message based on type
-                const messageToEncode = messages[0].typeUrl === '/layer.bridge.MsgWithdrawTokens' 
-                    ? {
-                        ...messages[0],
-                        value: {
-                            ...messages[0].value,
-                            recipient: messages[0].value.recipient.toLowerCase().replace('0x', '')
-                        }
-                    }
-                    : {
-                        ...messages[0],
-                        value: {
-                            creator: messages[0].value.creator,
-                            query_id: messages[0].value.query_id,
-                            timestamp: messages[0].value.timestamp.toString()
-                        }
-                    };
-
-                // Encode the message using the appropriate encoder
-                const encoder = this.registry.get(messageToEncode.typeUrl);
+                // Encode messages for broadcasting
+                const encodedMessages = await Promise.all(messages.map(async (msg) => {
+                    const encoder = this.registry.get(msg.typeUrl);
                 if (!encoder) {
-                    throw new Error(`No encoder found for message type: ${messageToEncode.typeUrl}`);
+                        throw new Error(`No encoder found for message type: ${msg.typeUrl}`);
                 }
-                const encodedMessage = encoder.encode(messageToEncode.value);
+                    const encoded = encoder.encode(msg.value);
+                    return {
+                        typeUrl: msg.typeUrl,
+                        value: encoded
+                    };
+                }));
 
                 // Broadcast the transaction
-                const result = await this.broadcastTransaction(encodedMessage, messages[0]);
-                return result;
+                const broadcastResult = await this.broadcastTransaction(encodedMessages, messages);
+                
+                // Update sequence after successful transaction
+                this.updateSequenceAfterSuccess(signerAddress, sequence);
+                
+                return broadcastResult;
             } catch (error) {
                 console.error('Error in signAndBroadcast:', error);
                 throw error;
@@ -235,8 +546,20 @@
         }
 
         // Helper method to handle transaction broadcasting
-        async broadcastTransaction(txBytes, originalMessage, mode = "BROADCAST_MODE_SYNC") {
+        async broadcastTransaction(encodedMessages, originalMessages, mode = "BROADCAST_MODE_SYNC", sequence = null) {
             try {
+                // If no sequence provided, get it from the signer address
+                if (!sequence && this.signature && this.publicKey) {
+                    const accounts = await this.signer.getAccounts();
+                    if (accounts.length > 0) {
+                        sequence = await this.getAndIncrementSequence(accounts[0].address);
+                    }
+                }
+                
+                if (!sequence) {
+                    throw new Error('No sequence number available for transaction');
+                }
+                
                 // Create protobuf types
                 const root = new protobuf.Root();
                 
@@ -258,7 +581,7 @@
                 const TxBody = new protobuf.Type("TxBody")
                     .add(new protobuf.Field("messages", 1, "Any", "repeated"))
                     .add(new protobuf.Field("memo", 2, "string"))
-                    .add(new protobuf.Field("timeoutHeight", 3, "uint64"));
+                    .add(new protobuf.Field("timeout_height", 3, "uint64"));
                 
                 // Define SignMode enum
                 const SignMode = new protobuf.Enum("SignMode")
@@ -277,26 +600,24 @@
                 
                 // Define SignerInfo type
                 const SignerInfo = new protobuf.Type("SignerInfo")
-                    .add(new protobuf.Field("publicKey", 1, "Any"))
-                    .add(new protobuf.Field("modeInfo", 2, "ModeInfo"))
+                    .add(new protobuf.Field("public_key", 1, "Any"))
+                    .add(new protobuf.Field("mode_info", 2, "ModeInfo"))
                     .add(new protobuf.Field("sequence", 3, "uint64"));
                 
                 // Define Fee type
                 const Fee = new protobuf.Type("Fee")
                     .add(new protobuf.Field("amount", 1, "Coin", "repeated"))
-                    .add(new protobuf.Field("gasLimit", 2, "uint64"))
-                    .add(new protobuf.Field("payer", 3, "string"))
-                    .add(new protobuf.Field("granter", 4, "string"));
+                    .add(new protobuf.Field("gas_limit", 2, "uint64"));
                 
                 // Define AuthInfo type
                 const AuthInfo = new protobuf.Type("AuthInfo")
-                    .add(new protobuf.Field("signerInfos", 1, "SignerInfo", "repeated"))
+                    .add(new protobuf.Field("signer_infos", 1, "SignerInfo", "repeated"))
                     .add(new protobuf.Field("fee", 2, "Fee"));
                 
                 // Define Tx type
                 const Tx = new protobuf.Type("Tx")
                     .add(new protobuf.Field("body", 1, "TxBody"))
-                    .add(new protobuf.Field("authInfo", 2, "AuthInfo"))
+                    .add(new protobuf.Field("auth_info", 2, "AuthInfo"))
                     .add(new protobuf.Field("signatures", 3, "bytes", "repeated"));
 
                 // Add types to root
@@ -326,19 +647,15 @@
                 }
                 const account = accounts[0];
 
-                // Create the message Any
-                const messageAny = {
-                    typeUrl: originalMessage.typeUrl,
-                    value: txBytes
-                };
-
-                // Create the TxBody with the message
+                // Create the TxBody with all messages
                 const txBody = {
-                    messages: [messageAny],
-                    memo: originalMessage.typeUrl === '/layer.bridge.MsgWithdrawTokens' 
+                    messages: encodedMessages,
+                    memo: originalMessages[0].typeUrl === '/layer.bridge.MsgWithdrawTokens' 
                         ? "Withdraw TRB to Ethereum"
+                        : originalMessages[0].typeUrl === '/cosmos.staking.v1beta1.MsgDelegate'
+                        ? "Delegate tokens to validator"
                         : "Request attestations for withdrawal",
-                    timeoutHeight: 0
+                    timeout_height: 0
                 };
 
                 // Create the public key
@@ -355,18 +672,18 @@
 
                 // Create the AuthInfo
                 const authInfo = {
-                    signerInfos: [{
-                        publicKey: pubKeyAny,
-                        modeInfo: {
+                    signer_infos: [{
+                        public_key: pubKeyAny,
+                        mode_info: {
                             single: {
                                 mode: 127 // SIGN_MODE_LEGACY_AMINO_JSON
                             }
                         },
-                        sequence: parseInt(this.sequence)
+                        sequence: parseInt(sequence)
                     }],
                     fee: {
                         amount: [{ denom: "loya", amount: "5000" }],
-                        gasLimit: parseInt("200000"),
+                        gas_limit: parseInt("200000"),
                         payer: "",
                         granter: ""
                     }
@@ -375,14 +692,25 @@
                 // Create the final transaction
                 const tx = {
                     body: txBody,
-                    authInfo: authInfo,
+                    auth_info: authInfo,
                     signatures: [this.signature]
                 };
 
                 // Create and encode the final transaction
                 const txObj = TxType.create(tx);
+                
+                // Debug: Validate protobuf encoding
+                const validationError = TxType.verify(txObj);
+                if (validationError) {
+                    console.error('Protobuf validation error:', validationError);
+                    throw new Error(`Protobuf validation failed: ${validationError}`);
+                }
+                
                 const encodedTx = TxType.encode(txObj).finish();
                 const base64Tx = btoa(String.fromCharCode.apply(null, encodedTx));
+                
+                console.log('Encoded transaction (base64):', base64Tx);
+                console.log('Encoded transaction length:', encodedTx.length);
 
                 // Broadcast the transaction using the encoded bytes
                 const response = await fetch(`${this.rpcUrl}/cosmos/tx/v1beta1/txs`, {
@@ -447,6 +775,68 @@
                 console.error('Error encoding transaction:', error);
                 throw error;
             }
+        }
+
+        async getStakingValidators() {
+            try {
+                const response = await fetch(`${this.rpcUrl}/cosmos/staking/v1beta1/validators?status=BOND_STATUS_BONDED`);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+                return {
+                    validators: data.validators.map(validator => ({
+                        operatorAddress: validator.operator_address,
+                        description: {
+                            moniker: validator.description.moniker,
+                            identity: validator.description.identity,
+                            website: validator.description.website,
+                            details: validator.description.details
+                        },
+                        status: validator.status,
+                        tokens: validator.tokens,
+                        commission: validator.commission
+                    }))
+                };
+            } catch (error) {
+                console.error('Error fetching validators:', error);
+                throw error;
+            }
+        }
+
+        // Add method to get and manage sequence numbers
+        async getAndIncrementSequence(address) {
+            const now = Date.now();
+            const cached = this.sequenceCache.get(address);
+            
+            // If we have a recent cache (within 5 seconds), use it and increment
+            if (cached && (now - cached.lastUpdated) < 5000) {
+                const currentSequence = cached.sequence;
+                cached.sequence = (parseInt(currentSequence) + 1).toString();
+                cached.lastUpdated = now;
+                return currentSequence;
+            }
+            
+            // Otherwise, fetch fresh from chain
+            const accountInfo = await this.getAccount(address);
+            const sequence = accountInfo.sequence;
+            
+            // Cache the next sequence
+            this.sequenceCache.set(address, {
+                sequence: (parseInt(sequence) + 1).toString(),
+                lastUpdated: now
+            });
+            
+            return sequence;
+        }
+
+        // Add method to update sequence after successful transaction
+        updateSequenceAfterSuccess(address, newSequence) {
+            const now = Date.now();
+            this.sequenceCache.set(address, {
+                sequence: (parseInt(newSequence) + 1).toString(),
+                lastUpdated: now
+            });
         }
     }
 

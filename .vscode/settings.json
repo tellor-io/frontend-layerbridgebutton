@@ -1,0 +1,14 @@
+{
+  "protoc": {
+    "path": "protoc",
+    "options": [
+      "--proto_path=frontend/proto"
+    ]
+  },
+  "protoc-gen-ts_proto": {
+    "path": "protoc-gen-ts_proto",
+    "options": [
+      "--proto_path=frontend/proto"
+    ]
+  }
+} 

@@ -3,6 +3,7 @@ window.layerProto = {
     // Message type URLs
     MSG_WITHDRAW_TOKENS_TYPE: "/layer.bridge.MsgWithdrawTokens",
     MSG_REQUEST_ATTESTATIONS_TYPE: "/layer.bridge.MsgRequestAttestations",
+    MSG_DELEGATE_TYPE: "/cosmos.staking.v1beta1.MsgDelegate",
     
     // Initialize proto types
     bridge: {
@@ -119,6 +120,18 @@ window.layerProto = {
         };
     },
 
+    // Helper function to create a MsgDelegate message
+    createMsgDelegate: (delegatorAddress, validatorAddress, amount) => {
+        return {
+            typeUrl: window.layerProto.MSG_DELEGATE_TYPE,
+            value: window.cosmos.staking.v1beta1.MsgDelegate.create({
+                delegatorAddress,
+                validatorAddress,
+                amount
+            })
+        };
+    },
+
     // Helper function to encode a message to protobuf format
     encodeMessage: (message) => {
         // Check if proto code is loaded
@@ -132,6 +145,8 @@ window.layerProto = {
             encoder = window.layerProto.bridge.MsgWithdrawTokens;
         } else if (message.typeUrl === window.layerProto.MSG_REQUEST_ATTESTATIONS_TYPE) {
             encoder = window.layerProto.bridge.MsgRequestAttestations;
+        } else if (message.typeUrl === window.layerProto.MSG_DELEGATE_TYPE) {
+            encoder = window.cosmos.staking.v1beta1.MsgDelegate;
         } else {
             throw new Error(`Unknown message type: ${message.typeUrl}`);
         }
@@ -266,6 +281,7 @@ window.layerProto = {
 console.log('Proto types initialized:', {
     MsgWithdrawTokens: !!window.layerProto.bridge.MsgWithdrawTokens,
     MsgRequestAttestations: !!window.layerProto.bridge.MsgRequestAttestations,
+    MsgDelegate: !!window.cosmos?.staking?.v1beta1?.MsgDelegate,
     Coin: !!window.layerProto.bridge.Coin
 });
 

@@ -8,9 +8,6 @@
     <link rel="stylesheet" href="main.css" />
     <link rel="icon" type="image/x-icon" href="/drkgrnswsh.png">
 
-    <!-- Load protobuf.js first -->
-    <script src="https://cdn.jsdelivr.net/npm/protobufjs@7.2.4/dist/protobuf.min.js"></script>
-
     <script>
       if (typeof crypto.randomUUID !== 'function') {
         crypto.randomUUID = function() {
@@ -24,6 +21,12 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
     <script src="https://cdn.ethers.io/lib/ethers-5.7.2.umd.min.js" type="application/javascript"></script>
+    <script src="https://cdn.jsdelivr.net/npm/protobufjs@7.2.4/dist/protobuf.min.js"></script>
+    <script src="./proto/staking_proto.js"></script>
+    <script>
+      console.log('AFTER staking_proto.js:', window.cosmos);
+    </script>
+    <script src="./extensions/cosmjs/stargate.js"></script>
   </head>
 
   <body>
@@ -31,7 +34,7 @@
       <div class="top-right">
       </div>
       <h1 style="display: flex; align-items: center; justify-content: center; margin: 0; padding: 32px 0 0 0;">
-        <img src="bridge-title.png" alt="Bridge Title" style="max-width:600px;width:100%;height:auto;display:block;margin:0 auto;">
+        <img src="bridge-title.png" alt="Bridge Title" style="max-width:450px;width:100%;height:auto;display:block;margin:0 auto;">
       </h1>
       <div class="disclaimer">*Sepolia Test Network Only*</div>
     </header>
@@ -41,6 +44,7 @@
           <div class="bridge-direction-selector">
             <button id="bridgeToLayerBtn" class="bridge-direction-btn active">Bridge to Layer</button>
             <button id="bridgeToEthBtn" class="bridge-direction-btn">Bridge to Ethereum</button>
+            <button id="delegateBtn" class="bridge-direction-btn">Delegate Tokens</button>
           </div>
 
           <!-- Bridge to Layer Section -->
@@ -105,6 +109,36 @@
                 </div>
             </div>
           </div>
+
+          <!-- Delegate Section -->
+          <div id="delegateSection" class="bridge-section">
+            <div class="wallet-connection-container">
+                <div class="wallet-button-group">
+                    <button id="connectKeplrWallet" class="button-style-2">Connect Cosmos Wallet</button>
+                    <p id="keplrWalletAddress" class="truncated-address">Not connected</p>
+                </div>
+            </div>
+            
+            <div class="delegate-controls" style="display: none;">
+                <div class="input-fields">
+                    <div class="input-with-label">
+                        <label class="input-label">Validator</label>
+                        <select id="validatorSelect" class="input" style="width: 100%;">
+                            <option value="">Select a validator</option>
+                        </select>
+                    </div>
+                    
+                    <div class="input-with-label">
+                        <label class="input-label">Amount</label>
+                        <input type="number" id="delegateAmount" class="input" placeholder="Enter amount to delegate" step="0.000001" min="0">
+                    </div>
+                </div>
+                
+                <div class="button-container">
+                    <button id="delegateButton" class="button-style-1">Delegate Tokens</button>
+                </div>
+            </div>
+          </div>
           <a target="_blank" href="https://github.com/tellor-io/frontend-layerbridgebutton">Front-End code</a>
         </div>
       </div>
@@ -144,28 +178,16 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/web3/1.7.4/web3.min.js"></script>
     <!-- Load app.js as a module only once -->
     <script type="module">
-      // Define a global variable to track CosmJS loading
-      window.cosmjsLoaded = false;
+      import App from './app.js';
+      import DelegateApp from './delegate.js';
       
       // Function to load a single script
       function loadScript(src, type = 'text/javascript') {
         return new Promise((resolve, reject) => {
-          // Skip if app.js is already loaded
-          if (src === 'app.js' && document.querySelector('script[src="app.js"]')) {
-            resolve();
-            return;
-          }
           const script = document.createElement('script');
           script.src = src;
           script.type = type;
-          script.onload = () => {
-            // For app.js, wait a tick to ensure App is defined
-            if (src === 'app.js') {
-              setTimeout(resolve, 0);
-            } else {
-              resolve();
-            }
-          };
+          script.onload = () => resolve();
           script.onerror = () => reject(new Error(`Failed to load ${src}`));
           document.head.appendChild(script);
         });
@@ -200,41 +222,52 @@
         }
       }
 
-      // Load CosmJS and then initialize the app
-      loadCosmJS()
-        .then(success => {
-          if (!success) {
+      // Initialize everything in the correct order
+      async function initialize() {
+        try {
+          // First load CosmJS
+          const cosmjsLoaded = await loadCosmJS();
+          if (!cosmjsLoaded) {
             throw new Error('Failed to load CosmJS');
           }
           
-          // Load app.js as a module
-          return loadScript('app.js', 'module');
-        })
-        .then(() => {
-          // Wait for App to be defined
-          return new Promise((resolve) => {
-            const checkApp = () => {
-              if (typeof window.App !== 'undefined') {
-                resolve();
-              } else {
-                setTimeout(checkApp, 100);
+          // Then initialize App and DelegateApp
+          await App.init();
+          await DelegateApp.init();
+
+          // Set up event listeners for the delegate button
+          const delegateBtn = document.getElementById('delegateBtn');
+          if (delegateBtn) {
+            delegateBtn.addEventListener('click', () => {
+              // Hide all sections
+              document.querySelectorAll('.bridge-section').forEach(section => {
+                section.classList.remove('active');
+              });
+              document.querySelectorAll('.bridge-direction button').forEach(btn => {
+                btn.classList.remove('active');
+              });
+
+              // Show delegate section and activate button
+              const delegateSection = document.getElementById('delegateSection');
+              if (delegateSection) {
+                delegateSection.classList.add('active');
+                delegateBtn.classList.add('active');
               }
-            };
-            checkApp();
-          });
-        })
-        .then(() => {
-          // Initialize the app after everything is loaded
-          return window.App.init();
-        })
-        .catch(error => {
-          console.error('Initialization error:', error);
-          const walletButton = document.getElementById('walletButton');
-          if (walletButton) {
-            walletButton.textContent = 'Error: Please refresh page';
-            walletButton.disabled = true;
+
+              // Update bridge direction
+              if (window.App) {
+                window.App.currentBridgeDirection = 'delegate';
+                window.App.updateUIForCurrentDirection();
+              }
+            });
           }
-        });
+        } catch (error) {
+          console.error('Initialization error:', error);
+        }
+          }
+
+      // Start initialization
+      initialize();
     </script>
     <script>
       document.addEventListener('DOMContentLoaded', function() {
@@ -252,9 +285,11 @@
         // Add tab switch handlers
         const bridgeToLayerBtn = document.getElementById('bridgeToLayerBtn');
         const bridgeToEthBtn = document.getElementById('bridgeToEthBtn');
+        const delegateBtn = document.getElementById('delegateBtn');
         
         bridgeToLayerBtn.addEventListener('click', hideAllTooltips);
         bridgeToEthBtn.addEventListener('click', hideAllTooltips);
+        delegateBtn.addEventListener('click', hideAllTooltips);
         
         infoIcons.forEach(icon => {
             // Only add tooltip functionality to the icon in the Bridge to Layer section

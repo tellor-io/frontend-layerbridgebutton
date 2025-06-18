@@ -1,0 +1,15 @@
+syntax = "proto3";
+package amino;
+
+import "google/protobuf/descriptor.proto";
+
+// Amino encoding options
+extend google.protobuf.FieldOptions {
+  // dont_omitempty disables the default behavior of omitting empty values
+  bool dont_omitempty = 11110001;
+}
+
+extend google.protobuf.MessageOptions {
+  // name sets the amino name for a message
+  string name = 11110002;
+} 

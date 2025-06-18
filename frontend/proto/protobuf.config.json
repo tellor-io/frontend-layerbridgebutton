@@ -1,0 +1,9 @@
+{
+  "include_paths": ["."],
+  "output_directory": ".",
+  "proto_files": [
+    "Staking/tx.proto",
+    "bridge/tx.proto",
+    "reporter/tx.proto"
+  ]
+} 
